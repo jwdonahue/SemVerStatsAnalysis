@@ -40,6 +40,11 @@ namespace VersionDataAnalyzer
 
     class Program
     {
+        private const char _dot = '.';
+        private const char _comma = ',';
+        private const char _plus = '+';
+        private const char _hyphen = '-';
+
         static int Main(string[] args)
         {
             uint versionCount = 0;
@@ -61,10 +66,15 @@ namespace VersionDataAnalyzer
 
             foreach (var line in lines)
             {
-                string[] fields = AddMissingFields(line).Split(',');
-                uint count;
+                // The first line could be a header...
+                if (line.ToLower().StartsWith("count")) continue;
 
-                if (!uint.TryParse(fields[0], out count)) continue; // First line can be header.
+                string[] fields = GetFields(line);
+
+                if (!uint.TryParse(fields[0], out var count))
+                {
+                    throw new Exception($"Bad data error, this is not a semver string: '{line}'");
+                }
 
                 versionCount += count;
                 majorCounts[fields[1].Length] += count;
@@ -74,7 +84,7 @@ namespace VersionDataAnalyzer
                 prereleaseCounts[fields[4].Length] += count;
                 if (fields[4].Length > 0)
                 {
-                    prereleaseFieldCounts[CountDots(fields[4])] += count;
+                    prereleaseFieldCounts[Count(_dot, fields[4])] += count;
                 }
                 else
                 {
@@ -84,7 +94,7 @@ namespace VersionDataAnalyzer
                 metaCounts[fields[5].Length] += count;
                 if (fields[5].Length > 0)
                 {
-                    metaFieldCounts[CountDots(fields[5])] += count;
+                    metaFieldCounts[Count(_dot, fields[5])] += count;
                 }
                 else
                 {
@@ -104,32 +114,55 @@ namespace VersionDataAnalyzer
             return 0;
         }
 
-        static uint CountDots(string str)
+        static int Count(char charToCount, string str)
         {
-            uint count = 0;
+            int count = 0;
             foreach(var c in str)
             {
-                if (c == '.') count++;
+                if (c == charToCount) count++;
             }
 
             return count;
         }
 
-        static string AddMissingFields(string str)
+        static string[] GetFields(string str)
         {
-            int count = 0;
-            foreach (var c in str)
+            int count = Count(_comma, str);
+
+            // The first four fields are required.
+            // count,major,minor,patch
+            if (count < 3)
             {
-                if (c == ',') count++;
+                throw new Exception($"Bad data error, this is not a semver string: '{str}'");
             }
 
-
-            for (int commasNeeded = (5 - count); commasNeeded > 0; commasNeeded--)
+            if (count == 3)
             {
-                str += ',';
+                // Missing both tag fields.
+                str += _comma;
+                str += _comma;
+            }
+            else // It has to be 4 commas (5 fields)
+            {
+                int lastFieldIdx = str.LastIndexOf(_comma);
+                char tag = str[lastFieldIdx + 1];
+
+                // Is the one tag a prerelease or a meta tag?
+                if (tag == _plus)
+                {
+                    str = str.Insert(lastFieldIdx, $"{_comma}");
+                }
+                else if (tag == _hyphen)
+                {
+                    str += _comma;
+                }
+                else
+                {
+                    throw new Exception($"Bad data error, this is not a semver string: '{str}'");
+                }
             }
 
-            return str;
+            return str.Split(_comma, 6);
         }
     }
 }
