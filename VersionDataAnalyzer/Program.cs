@@ -6,6 +6,7 @@
 // ---------------------------------------------------------------------------
 
 using System;
+using System.Text.RegularExpressions;
 
 namespace VersionDataAnalyzer
 {
@@ -26,16 +27,12 @@ namespace VersionDataAnalyzer
     //
     //  count,major,minor,patch,optionalPrerelease,optionalMeta
     //
-    // Note that if meta is populated, there must be a prerelease field,
-    // even if it is empty.
-    //
     // This program came about as an expedience, after hand messaging the first
     // data set and finding OpenOffice Calc to be less than desired.
     //
     // I can/will make this better.
 
     // TODO: Add output file argument.
-    // TODO: Add support to read records of the form 'count,semver'.
     // TODO: Add support to read a list of raw semver strings.
 
     class Program
@@ -44,17 +41,31 @@ namespace VersionDataAnalyzer
         private const char _comma = ',';
         private const char _plus = '+';
         private const char _hyphen = '-';
+        private const string _doubleCommas = ",,";
+
+        // This regex borrowed from https://github.com/semver/semver/blob/master/semver.md#is-there-a-suggested-regular-expression-regex-to-check-a-semver-string
+        private const string _semverRegexStr = @"^(?<major>0|[1-9]\d*)\.(?<minor>0|[1-9]\d*)\.(?<patch>0|[1-9]\d*)(?:-(?<prerelease>(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+(?<buildmetadata>[0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$";
+        private const string _countAndSemverRegexStr = @"(?<Count>\d*),((?<major>0|[1-9]\d*)\.(?<minor>0|[1-9]\d*)\.(?<patch>0|[1-9]\d*)(?:-(?<prerelease>(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+(?<buildmetadata>[0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?)$";
+
+        private static Regex _semverRegex = new Regex(_semverRegexStr, RegexOptions.Compiled);
+
+        private static Regex _countAndSemverRegex = new Regex(_countAndSemverRegexStr, RegexOptions.Compiled);
 
         static int Main(string[] args)
         {
-            uint versionCount = 0;
-            var majorCounts = new uint[100];
-            var minorCounts = new uint[100];
-            var patchCounts = new uint[100];
-            var prereleaseCounts = new uint[100];
-            var prereleaseFieldCounts = new uint[100];
-            var metaCounts = new uint[100];
-            var metaFieldCounts = new uint[100];
+            UInt64 semverCount = 0;
+            UInt64 notSemverCount = 0;
+
+            var majorCounts = new UInt64[100];
+            var minorCounts = new UInt64[100];
+            var patchCounts = new UInt64[100];
+            var prereleaseCharCounts = new UInt64[256];
+            var prereleaseFieldCounts = new UInt64[256];
+            var metaCharCounts = new UInt64[256];
+            var metaFieldCounts = new UInt64[256];
+
+            UInt64 hasPrereleaseCount = 0;
+            UInt64 hasMetaCount = 0;
 
             if (args.Length != 1)
             {
@@ -64,105 +75,91 @@ namespace VersionDataAnalyzer
 
             string[] lines = System.IO.File.ReadAllLines(args[0]);
 
-            foreach (var line in lines)
+            for (long idx = 0; idx < lines.LongLength; idx++)
             {
-                // The first line could be a header...
-                if (line.ToLower().StartsWith("count")) continue;
+                Match match = _countAndSemverRegex.Match(lines[idx]);
 
-                string[] fields = GetFields(line);
+                UInt64 count = 0;
 
-                if (!uint.TryParse(fields[0], out var count))
+                if (match.Success)
                 {
-                    throw new Exception($"Bad data error, this is not a semver string: '{line}'");
-                }
-
-                versionCount += count;
-                majorCounts[fields[1].Length] += count;
-                minorCounts[fields[2].Length] += count;
-                patchCounts[fields[3].Length] += count;
-                
-                prereleaseCounts[fields[4].Length] += count;
-                if (fields[4].Length > 0)
-                {
-                    prereleaseFieldCounts[Count(_dot, fields[4])] += count;
+                    count = UInt64.Parse(match.Groups["Count"].Value);
                 }
                 else
                 {
-                    prereleaseFieldCounts[0] += count;
+                    match =_semverRegex.Match(lines[idx]);
                 }
 
-                metaCounts[fields[5].Length] += count;
-                if (fields[5].Length > 0)
+                if (!match.Success)
                 {
-                    metaFieldCounts[Count(_dot, fields[5])] += count;
+                    notSemverCount++;
+
+                    // TODO: Write this to an error log instead and add an ignore non-SemVer switch.
+                    //Console.WriteLine($"ERROR: Failed to match line #{idx + 1}: {lines[idx]}\nContinuing to process file...");
+#if false
+                    if ('v' == countAndSemverMatch.Groups["Semver"].Value.ToLower()[0])
+                    {
+                        semverMatch = _semverRegex.Match(countAndSemverMatch.Groups["Semver"].Value.Substring(1));
+                        if (semverMatch.Success)
+                        {
+                            Console.WriteLine($"WARNING: Version string counted as non-SemVer would have passed without the leading {countAndSemverMatch.Groups["Semver"].Value[0]}");
+                        }
+                    }
+#endif
+                    continue;
                 }
-                else
+
+                semverCount++;
+
+                majorCounts[match.Groups["major"].Value.Length] += count > 0 ? count : 1;
+                minorCounts[match.Groups["minor"].Value.Length] += count > 0 ? count : 1;
+                patchCounts[match.Groups["patch"].Value.Length] += count > 0 ? count : 1;
+
+                string prerelease = match.Groups["prerelease"].Value;
+                if (!string.IsNullOrEmpty(prerelease))
                 {
-                    metaFieldCounts[0] += count;
+                    hasPrereleaseCount++;
+                    prereleaseCharCounts[prerelease.Length]++;
+                    prereleaseFieldCounts[CountDots(ref prerelease)]++;
+                }
+
+                string meta = match.Groups["buildmetadata"].Value;
+                if (!string.IsNullOrEmpty(meta))
+                {
+                    hasMetaCount++;
+                    metaCharCounts[meta.Length]++;
+                    metaFieldCounts[CountDots(ref meta)]++;
                 }
             }
 
             Console.WriteLine("Char Count,Major,Minor,Patch,Prerelease,PrereleaseFields,Meta,MetaFields");
             for (uint idx = 0; idx < 100; idx++)
             {
-                Console.WriteLine($"{idx},{majorCounts[idx]},{minorCounts[idx]},{patchCounts[idx]},{prereleaseCounts[idx]},{prereleaseFieldCounts[idx]},{metaCounts[idx]},{metaFieldCounts[idx]}");
+                Console.WriteLine($"{idx},{majorCounts[idx]},{minorCounts[idx]},{patchCounts[idx]},{prereleaseCharCounts[idx]},{prereleaseFieldCounts[idx]},{metaCharCounts[idx]},{metaFieldCounts[idx]}");
             }
 
-            Console.WriteLine($"\n\nversionCount:,{versionCount}");
+            for (uint idx = 100; idx < 256; idx++)
+            {
+                Console.WriteLine($"{idx},x,x,x,{prereleaseCharCounts[idx]},{prereleaseFieldCounts[idx]},{metaCharCounts[idx]},{metaFieldCounts[idx]}");
+            }
+
+            Console.WriteLine($"\n\nSemVer Count:,{semverCount}");
+            Console.WriteLine($"Non-SemVer Count:,{notSemverCount}\n");
 
             Console.ReadKey();
             return 0;
         }
 
-        static int Count(char charToCount, string str)
+        static uint CountDots(ref string str)
         {
-            int count = 0;
+            uint count = 0;
             foreach(var c in str)
             {
-                if (c == charToCount) count++;
+                if (c == '.') count++;
             }
 
             return count;
         }
 
-        static string[] GetFields(string str)
-        {
-            int count = Count(_comma, str);
-
-            // The first four fields are required.
-            // count,major,minor,patch
-            if (count < 3)
-            {
-                throw new Exception($"Bad data error, this is not a semver string: '{str}'");
-            }
-
-            if (count == 3)
-            {
-                // Missing both tag fields.
-                str += _comma;
-                str += _comma;
-            }
-            else // It has to be 4 commas (5 fields)
-            {
-                int lastFieldIdx = str.LastIndexOf(_comma);
-                char tag = str[lastFieldIdx + 1];
-
-                // Is the one tag a prerelease or a meta tag?
-                if (tag == _plus)
-                {
-                    str = str.Insert(lastFieldIdx, $"{_comma}");
-                }
-                else if (tag == _hyphen)
-                {
-                    str += _comma;
-                }
-                else
-                {
-                    throw new Exception($"Bad data error, this is not a semver string: '{str}'");
-                }
-            }
-
-            return str.Split(_comma, 6);
-        }
     }
 }
