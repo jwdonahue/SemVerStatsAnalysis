@@ -6,6 +6,8 @@
 // ---------------------------------------------------------------------------
 
 using System;
+using System.IO;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace VersionDataAnalyzer
@@ -37,11 +39,14 @@ namespace VersionDataAnalyzer
 
     class Program
     {
+        private const uint _tripleCharCountSlots = 100;
+        private const uint _prereleaseCharCountSlots = 256;
+        private const uint _prereleaseFieldCountSlots = 64;
+        private const uint _metaCharCountSlots = 256;
+        private const uint _metaFieldCountSlots = 64;
+
+
         private const char _dot = '.';
-        private const char _comma = ',';
-        private const char _plus = '+';
-        private const char _hyphen = '-';
-        private const string _doubleCommas = ",,";
 
         // This regex borrowed from https://github.com/semver/semver/blob/master/semver.md#is-there-a-suggested-regular-expression-regex-to-check-a-semver-string
         private const string _semverRegexStr = @"^(?<major>0|[1-9]\d*)\.(?<minor>0|[1-9]\d*)\.(?<patch>0|[1-9]\d*)(?:-(?<prerelease>(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+(?<buildmetadata>[0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$";
@@ -53,20 +58,21 @@ namespace VersionDataAnalyzer
 
         static int Main(string[] args)
         {
-            UInt64 semverCount = 0;
-            UInt64 notSemverCount = 0;
+            SummaryData summary = new SummaryData();
 
-            var majorCounts = new UInt64[100];
-            var minorCounts = new UInt64[100];
-            var patchCounts = new UInt64[100];
-            var prereleaseCharCounts = new UInt64[256];
-            var prereleaseFieldCounts = new UInt64[256];
-            var metaCharCounts = new UInt64[256];
-            var metaFieldCounts = new UInt64[256];
+            // TODO: Counts class.
+            var majorCounts = new ulong[_tripleCharCountSlots];
+            var minorCounts = new ulong[_tripleCharCountSlots];
+            var patchCounts = new ulong[_tripleCharCountSlots];
+            var prereleaseCharCounts = new ulong[_prereleaseCharCountSlots];
+            var prereleaseFieldCounts = new ulong[256];
+            var metaCharCounts = new ulong[_metaCharCountSlots];
+            var metaFieldCounts = new ulong[256];
 
-            UInt64 hasPrereleaseCount = 0;
-            UInt64 hasMetaCount = 0;
+            ulong hasPrereleaseCount = 0;
+            ulong hasMetaCount = 0;
 
+            // TODO: Arg handler.
             if (args.Length != 1)
             {
                 Console.WriteLine("Usage: VersionDataAnalyzer input_file\n");
@@ -75,91 +81,194 @@ namespace VersionDataAnalyzer
 
             string[] lines = System.IO.File.ReadAllLines(args[0]);
 
-            for (long idx = 0; idx < lines.LongLength; idx++)
+            // TODO: Add counter to file names so we don't overwrite data.
+
+            using (StreamWriter badLinesFile = new StreamWriter("BadLines.txt", false, Encoding.ASCII))
             {
-                Match match = _countAndSemverRegex.Match(lines[idx]);
-
-                UInt64 count = 0;
-
-                if (match.Success)
+                using (StreamWriter nearMisFile = new StreamWriter("CleanedNearMisses.txt", false, Encoding.ASCII))
                 {
-                    count = UInt64.Parse(match.Groups["Count"].Value);
-                }
-                else
-                {
-                    match =_semverRegex.Match(lines[idx]);
-                }
-
-                if (!match.Success)
-                {
-                    notSemverCount++;
-
-                    // TODO: Write this to an error log instead and add an ignore non-SemVer switch.
-                    //Console.WriteLine($"ERROR: Failed to match line #{idx + 1}: {lines[idx]}\nContinuing to process file...");
-#if false
-                    if ('v' == countAndSemverMatch.Groups["Semver"].Value.ToLower()[0])
+                    for (long idx = 0; idx < lines.LongLength; idx++)
                     {
-                        semverMatch = _semverRegex.Match(countAndSemverMatch.Groups["Semver"].Value.Substring(1));
-                        if (semverMatch.Success)
+                        summary.LineCount++;
+
+                        Match match = _countAndSemverRegex.Match(lines[idx]);
+
+                        UInt64 count = 0;
+
+                        if (match.Success)
                         {
-                            Console.WriteLine($"WARNING: Version string counted as non-SemVer would have passed without the leading {countAndSemverMatch.Groups["Semver"].Value[0]}");
+                            count = UInt64.Parse(match.Groups["Count"].Value);
+                        }
+                        else
+                        {
+                            match = _semverRegex.Match(lines[idx]);
+                        }
+
+                        if (!match.Success)
+                        {
+                            summary.NotSemverCount++;
+
+                            // TODO: Write this to an error log instead and add an ignore non-SemVer switch.
+                            //Console.WriteLine($"ERROR: Failed to match line #{idx + 1}: {lines[idx]}\nContinuing to process file...");
+
+                            char firstChar = lines[idx][0];
+                            if (('v' == firstChar) || ('V' == firstChar))
+                            {
+                                string prefixStripped = lines[idx].Substring(1); //match.Groups["Semver"].Value.Substring(1);
+                                match = _semverRegex.Match(prefixStripped);
+                                if (match.Success)
+                                {
+                                    summary.NearMissCount++;
+                                    nearMisFile.WriteLine(prefixStripped);
+                                }
+                            }
+                            else
+                            {
+                                badLinesFile.WriteLine(lines[idx]);
+                            }
+
+                            continue;
+                        }
+
+                        summary.SemverCount++;
+
+                        // TODO: LimitsData class.
+                        ulong majorLengthExcessiveCount = 0;
+                        ulong minorLengthExcessiveCount = 0;
+                        ulong patchLengthExcessiveCount = 0;
+                        ulong prereleaseLengthExcessiveCount = 0;
+                        ulong prereleaseFieldsExcessiveCount = 0;
+                        ulong metaLengthExcessiveCount = 0;
+                        ulong metaFieldsExcessiveCount = 0;
+
+                        int majorLength = match.Groups["major"].Value.Length;
+                        int minorLength = match.Groups["minor"].Value.Length;
+                        int patchLength = match.Groups["patch"].Value.Length;
+
+                        SetCharFieldCounts(majorLength, _tripleCharCountSlots, count, ref majorCounts[majorLength],
+                            ref majorLengthExcessiveCount);
+                        SetCharFieldCounts(minorLength, _tripleCharCountSlots, count, ref minorCounts[minorLength],
+                            ref minorLengthExcessiveCount);
+                        SetCharFieldCounts(patchLength, _tripleCharCountSlots, count, ref patchCounts[patchLength],
+                            ref patchLengthExcessiveCount);
+
+                        string prerelease = match.Groups["prerelease"].Value;
+                        if (!string.IsNullOrEmpty(prerelease))
+                        {
+                            SetTagFieldCounts(
+                                ref prerelease,
+                                ref hasPrereleaseCount,
+                                _prereleaseCharCountSlots,
+                                count,
+                                ref prereleaseCharCounts,
+                                ref prereleaseLengthExcessiveCount,
+                                _prereleaseFieldCountSlots,
+                                ref prereleaseFieldCounts,
+                                ref prereleaseFieldsExcessiveCount);
+                        }
+
+                        string meta = match.Groups["buildmetadata"].Value;
+                        if (!string.IsNullOrEmpty(meta))
+                        {
+                            SetTagFieldCounts(
+                                ref meta,
+                                ref hasMetaCount,
+                                _metaCharCountSlots,
+                                count,
+                                ref metaCharCounts,
+                                ref metaLengthExcessiveCount,
+                                _metaFieldCountSlots,
+                                ref metaFieldCounts,
+                                ref metaFieldsExcessiveCount
+                            );
                         }
                     }
-#endif
-                    continue;
-                }
 
-                semverCount++;
+                    Console.WriteLine("Char Count,Major,Minor,Patch,Prerelease,PrereleaseFields,Meta,MetaFields");
+                    for (uint idx = 0; idx < _tripleCharCountSlots; idx++)
+                    {
+                        bool hasCounts = (0 != majorCounts[idx]) ||
+                                         (0 != minorCounts[idx]) ||
+                                         (0 != patchCounts[idx]) ||
+                                         (0 != prereleaseCharCounts[idx]) ||
+                                         (0 != metaCharCounts[idx]);
 
-                majorCounts[match.Groups["major"].Value.Length] += count > 0 ? count : 1;
-                minorCounts[match.Groups["minor"].Value.Length] += count > 0 ? count : 1;
-                patchCounts[match.Groups["patch"].Value.Length] += count > 0 ? count : 1;
+                        if (hasCounts)
+                        {
+                            Console.WriteLine(
+                                $"{idx},{majorCounts[idx]},{minorCounts[idx]},{patchCounts[idx]},{prereleaseCharCounts[idx]},{prereleaseFieldCounts[idx]},{metaCharCounts[idx]},{metaFieldCounts[idx]}");
+                        }
+                    }
 
-                string prerelease = match.Groups["prerelease"].Value;
-                if (!string.IsNullOrEmpty(prerelease))
-                {
-                    hasPrereleaseCount++;
-                    prereleaseCharCounts[prerelease.Length]++;
-                    prereleaseFieldCounts[CountDots(ref prerelease)]++;
-                }
+                    for (uint idx = 100; idx < 256; idx++)
+                    {
+                        bool hasCounts = (0 != prereleaseCharCounts[idx]) || (0 != metaCharCounts[idx]);
 
-                string meta = match.Groups["buildmetadata"].Value;
-                if (!string.IsNullOrEmpty(meta))
-                {
-                    hasMetaCount++;
-                    metaCharCounts[meta.Length]++;
-                    metaFieldCounts[CountDots(ref meta)]++;
+                        if (hasCounts)
+                        {
+                            Console.WriteLine(
+                                $"{idx},x,x,x,{prereleaseCharCounts[idx]},{prereleaseFieldCounts[idx]},{metaCharCounts[idx]},{metaFieldCounts[idx]}");
+                        }
+                    }
+
+                    summary.Write();
+                    summary.Write(new StreamWriter("SummaryData.txt", false, Encoding.ASCII));
+
+                    Console.ReadKey();
+                    return 0;
                 }
             }
-
-            Console.WriteLine("Char Count,Major,Minor,Patch,Prerelease,PrereleaseFields,Meta,MetaFields");
-            for (uint idx = 0; idx < 100; idx++)
-            {
-                Console.WriteLine($"{idx},{majorCounts[idx]},{minorCounts[idx]},{patchCounts[idx]},{prereleaseCharCounts[idx]},{prereleaseFieldCounts[idx]},{metaCharCounts[idx]},{metaFieldCounts[idx]}");
-            }
-
-            for (uint idx = 100; idx < 256; idx++)
-            {
-                Console.WriteLine($"{idx},x,x,x,{prereleaseCharCounts[idx]},{prereleaseFieldCounts[idx]},{metaCharCounts[idx]},{metaFieldCounts[idx]}");
-            }
-
-            Console.WriteLine($"\n\nSemVer Count:,{semverCount}");
-            Console.WriteLine($"Non-SemVer Count:,{notSemverCount}\n");
-
-            Console.ReadKey();
-            return 0;
         }
 
         static uint CountDots(ref string str)
         {
+            // There's probably a better .Net way to do this.
             uint count = 0;
             foreach(var c in str)
             {
-                if (c == '.') count++;
+                if (c == _dot) count++;
             }
 
             return count;
         }
 
+        static void SetTagFieldCounts(
+            ref string tag, 
+            ref ulong hasTagCountInOut, 
+            uint maxLength, 
+            ulong count, 
+            ref ulong[] countInOut, 
+            ref ulong excessCountInOut, 
+            ulong maxFields, 
+            ref ulong[] fieldCountsInOut, 
+            ref ulong excessFieldsCountInOut)
+        {
+            hasTagCountInOut++;
+
+            SetCharFieldCounts(tag.Length, maxLength, count, ref countInOut[tag.Length], ref excessCountInOut);
+            
+            ulong fieldCount = CountDots(ref tag);
+
+            if (fieldCount < maxFields)
+            {
+                fieldCountsInOut[fieldCount] += count > 0 ? count : 1;
+            }
+            else
+            {
+                excessFieldsCountInOut++;
+            }
+        }
+
+        static void SetCharFieldCounts(int length, uint maxLength, ulong count, ref ulong countInOut, ref ulong excessCountInOut)
+        {
+            if (length < maxLength)
+            {
+                countInOut += count > 0 ? count : 1;
+            }
+            else
+            {
+                excessCountInOut++;
+            }
+        }
     }
 }
